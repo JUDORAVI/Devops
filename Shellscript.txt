@@ -7,5 +7,3 @@ while [ $i -le $n ]
 do
         sum=`expr $sum + $i`
         i=`expr $i + 2`
-done
-echo "Sum of even numbers is $sum"
