@@ -1,0 +1,83 @@
+name: Build Image
+
+on:
+ 
+ workflow_dispatch:
+
+ push:
+    branches:
+         - Devops
+   
+permissions:
+  contents: write
+  issues: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    environment: visitor_management_service
+    #if: github.event.pull_request.merged == true
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1 
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Get the latest image tag and bump version
+      id: get-latest-tag
+      run: |
+        REPO_NAME=${{ vars.ECR_REPOSITORY }}
+        LATEST_TAG=$(aws ecr describe-images --repository-name visitor_management --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' --output text || echo "None")
+        
+        # Default values if no tag exists
+        if [ "$LATEST_TAG" = "None" ]; then
+          NEW_TAG="${{ vars.NEW_TAG }}"
+        else
+          # Split tag into major, minor, patch
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST_TAG"
+          
+          # Detect the type of version bump from the commit message
+          if git log -1 --pretty=%B | grep -q "#major"; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif git log -1 --pretty=%B | grep -q "#minor"; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+          NEW_TAG="$MAJOR.$MINOR.$PATCH"
+        fi
+        
+        echo "New image tag will be: $NEW_TAG"
+        echo "IMAGE_TAG=$NEW_TAG" >> $GITHUB_ENV
+    - name: Build and push Docker image
+      id: build-and-push
+      run: |
+            docker build -t 774775168009.dkr.ecr.ap-south-1.amazonaws.com/visitor_management:${{ env.IMAGE_TAG }} .
+            docker push 774775168009.dkr.ecr.ap-south-1.amazonaws.com/visitor_management:${{ env.IMAGE_TAG }}
+   
+      run: |
+          TASK_DEFINITION=$(aws ecs describe-task-definition --task-definition $TASK_DEFINITION_NAME)
+              
+          
+          NEW_TASK_DEFINITION=$(echo $TASK_DEFINITION | jq --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" '.taskDefinition | .containerDefinitions[0].image=$IMAGE | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+              
+           
+          NEW_TASK_DEFINITION_ARN=$(aws ecs register-task-definition --cli-input-json "$NEW_TASK_DEFINITION" | jq -r '.taskDefinition.taskDefinitionArn')
+              
+          aws ecs update-service --cluster $CLUSTER_NAME --service $SERVICE_NAME --task-definition $NEW_TASK_DEFINITION_ARN
+
+    
